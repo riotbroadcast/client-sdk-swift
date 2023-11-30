@@ -12,11 +12,11 @@ Pod::Spec.new do |spec|
   spec.osx.deployment_target = '10.15'
 
   spec.swift_versions = ['4.2', '5']
-  spec.source         = { :git => 'https://github.com/livekit/client-sdk-swift.git', :tag => '1.1.3' }
+  spec.source         = { :git => 'https://github.com/riotbroadcast/client-sdk-swift.git' } # , :tag => '1.1.3'
 
   spec.source_files   = 'Sources/**/*'
 
-  spec.dependency 'WebRTC-SDK', '~> 114.5735.08'
+  spec.dependency 'WebRTC-SDK', '~> 114.5735.09-riot-2'
   spec.dependency 'SwiftProtobuf'
   spec.dependency 'PromisesSwift'
   spec.dependency 'Logging'
