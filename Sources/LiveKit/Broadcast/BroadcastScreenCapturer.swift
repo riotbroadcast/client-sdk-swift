@@ -99,7 +99,8 @@
                 name: name,
                 source: source,
                 capturer: capturer,
-                videoSource: videoSource
+                videoSource: videoSource,
+                reportStatistics: false
             )
         }
     }
