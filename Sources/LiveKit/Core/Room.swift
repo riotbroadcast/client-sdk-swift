@@ -429,4 +429,11 @@ public extension Room {
             }
         }
     }
+
+    var riotSilenceRemaining: Int? {
+        guard let riotAudioDelay = _riotAudioDelay else {
+            return nil
+        }
+        return riotAudioDelay.silenceRemaining?.intValue
+    }
 }
