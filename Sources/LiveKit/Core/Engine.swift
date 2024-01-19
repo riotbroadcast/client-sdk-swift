@@ -260,6 +260,9 @@ extension Engine {
             rtcConfiguration.iceTransportPolicy = .relay
         }
 
+        // RIOT: Experimental configuration.
+        rtcConfiguration.audioJitterBufferMaxPackets = 5
+
         let subscriber = try Transport(config: rtcConfiguration,
                                        target: .subscriber,
                                        primary: subscriberPrimary,
