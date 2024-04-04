@@ -12,7 +12,7 @@ Pod::Spec.new do |spec|
   spec.osx.deployment_target = '10.15'
 
   spec.swift_versions = ['4.2', '5']
-  spec.source         = { :git => 'https://github.com/riotbroadcast/client-sdk-swift.git', :tag => '1.1.3-riot' }
+  spec.source         = { :git => 'https://github.com/riotbroadcast/client-sdk-swift.git', :tag => '1.1.3b-riot' }
 
   spec.source_files   = 'Sources/**/*'
 
