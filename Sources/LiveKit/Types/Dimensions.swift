@@ -17,7 +17,7 @@
 import CoreMedia
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 @objc
 public class Dimensions: NSObject, Loggable {

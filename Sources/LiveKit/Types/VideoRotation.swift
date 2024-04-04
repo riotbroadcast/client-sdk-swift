@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 public enum VideoRotation: Int {
     case _0 = 0

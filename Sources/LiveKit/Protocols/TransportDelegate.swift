@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 protocol TransportDelegate: AnyObject {
     func transport(_ transport: Transport, didUpdateState state: RTCPeerConnectionState) async

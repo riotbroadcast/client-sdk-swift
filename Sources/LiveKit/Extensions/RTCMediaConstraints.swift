@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 extension LKRTCMediaConstraints {
     //    static let defaultOfferConstraints = RTCMediaConstraints(

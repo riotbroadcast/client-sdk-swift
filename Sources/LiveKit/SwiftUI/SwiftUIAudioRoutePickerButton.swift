@@ -18,7 +18,7 @@ import AVKit
 import Foundation
 import SwiftUI
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 public struct SwiftUIAudioRoutePickerButton: NativeViewRepresentable {
     typealias ViewType = AVRoutePickerView

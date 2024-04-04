@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 @objc
 public class LocalAudioTrack: Track, LocalTrack, AudioTrack {

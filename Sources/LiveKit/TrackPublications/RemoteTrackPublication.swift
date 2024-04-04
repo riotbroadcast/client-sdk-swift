@@ -17,7 +17,7 @@
 import CoreGraphics
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 @objc
 public enum SubscriptionState: Int, Codable {

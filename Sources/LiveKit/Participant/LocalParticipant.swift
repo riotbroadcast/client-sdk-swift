@@ -20,7 +20,7 @@ import Foundation
 import ReplayKit
 #endif
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 @objc
 public class LocalParticipant: Participant {

@@ -22,7 +22,7 @@ import Foundation
 import UIKit
 #endif
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 class BroadcastScreenCapturer: BufferCapturer {
     static let kRTCScreensharingSocketFD = "rtc_SSFD"

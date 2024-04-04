@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 public let defaultRatchetSalt: String = "LKFrameEncryptionKey"
 public let defaultMagicBytes: String = "LK-ROCKS"

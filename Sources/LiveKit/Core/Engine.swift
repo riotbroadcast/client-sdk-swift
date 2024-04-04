@@ -20,7 +20,7 @@ import Foundation
 import Network
 #endif
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 class Engine: Loggable {
     // MARK: - Public

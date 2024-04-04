@@ -17,7 +17,7 @@
 import CoreMedia
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 /// A ``VideoCapturer`` that can capture ``CMSampleBuffer``s.
 ///

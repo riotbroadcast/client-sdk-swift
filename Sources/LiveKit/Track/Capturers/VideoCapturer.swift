@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 protocol VideoCapturerProtocol {
     var capturer: LKRTCVideoCapturer { get }

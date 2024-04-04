@@ -16,7 +16,7 @@
 
 import Foundation
 
-@_implementationOnly import LiveKitWebRTC
+@_implementationOnly import WebRTC
 
 extension Engine: SignalClientDelegate {
     func signalClient(_ signalClient: SignalClient, didUpdateConnectionState connectionState: ConnectionState, oldState: ConnectionState, disconnectError: LiveKitError?) async {
