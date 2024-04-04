@@ -18,7 +18,8 @@ let package = Package(
     ],
     dependencies: [
         // LK-Prefixed Dynamic WebRTC XCFramework
-        .package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "114.5735.13"),
+        //.package(url: "https://github.com/livekit/webrtc-xcframework.git", exact: "114.5735.13"),
+        .package(name: "WebRTC", url: "https://github.com/riotbroadcast/webrtc-xcframework-static.git", .exact("114.5735.09-riot-5")),
         .package(url: "https://github.com/apple/swift-protobuf.git", .upToNextMajor(from: "1.25.2")),
         .package(url: "https://github.com/apple/swift-log.git", .upToNextMajor(from: "1.5.4")),
         // Only used for DocC generation
@@ -32,7 +33,8 @@ let package = Package(
             name: "LiveKit",
             dependencies: [
                 .target(name: "CHeaders"),
-                .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
+                // .product(name: "LiveKitWebRTC", package: "webrtc-xcframework"),
+                .product(name: "WebRTC", package: "WebRTC"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "Logging", package: "swift-log"),
             ],

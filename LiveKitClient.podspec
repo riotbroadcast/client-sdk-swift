@@ -4,7 +4,7 @@ Pod::Spec.new do |spec|
   spec.name         = 'LiveKitClient'
   spec.version      = '2.0.5'
   spec.summary      = 'LiveKit Swift Client SDK. Easily build live audio or video experiences into your mobile app, game or website.'
-  spec.homepage     = 'https://github.com/livekit/client-sdk-swift'
+  spec.homepage     = 'https://github.com/riotbroadcast/client-sdk-swift'
   spec.license      = { :type => 'Apache 2.0', :file => 'LICENSE' }
   spec.author       = 'LiveKit'
 
@@ -12,11 +12,11 @@ Pod::Spec.new do |spec|
   spec.osx.deployment_target = '10.15'
 
   spec.swift_versions = ['4.2', '5']
-  spec.source         = { :git => 'https://github.com/livekit/client-sdk-swift.git', :tag => '2.0.5' }
+  spec.source         = { :git => 'https://github.com/riotbroadcast/client-sdk-swift.git', :tag => '2.0.5-riot' }
 
   spec.source_files   = 'Sources/**/*'
 
-  spec.dependency 'WebRTC-SDK', '~> 114.5735.08'
+  spec.dependency 'WebRTC-SDK', '~> 114.5735.09-riot-5'
   spec.dependency 'SwiftProtobuf'
   spec.dependency 'PromisesSwift'
   spec.dependency 'Logging'

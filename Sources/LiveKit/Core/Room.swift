@@ -20,6 +20,8 @@ import Foundation
 import Network
 #endif
 
+@_implementationOnly import WebRTC
+
 @objc
 public class Room: NSObject, ObservableObject, Loggable {
     // MARK: - MulticastDelegate
@@ -140,6 +142,10 @@ public class Room: NSObject, ObservableObject, Loggable {
 
     private let _sidCompleter = AsyncCompleter<Sid>(label: "sid", defaultTimeOut: .sid)
 
+    // RIOT: Audio delay.
+    var _riotCurrentDelay: TimeInterval = 0.0
+    var _riotAudioDelay: RIAudioDelay!
+
     // MARK: Objective-C Support
 
     @objc
@@ -219,6 +225,9 @@ public class Room: NSObject, ObservableObject, Loggable {
                 self.objectWillChange.send()
             }
         }
+
+        // RIOT: Audio delay.
+        _riotAudioDelay = RIAudioDelay(delay: _riotCurrentDelay)
     }
 
     deinit {
@@ -420,5 +429,31 @@ public extension Room {
     static var bypassVoiceProcessing: Bool {
         get { Engine.bypassVoiceProcessing }
         set { Engine.bypassVoiceProcessing = newValue }
+    }
+}
+
+// MARK: - RIOT
+
+public extension Room {
+    var riotDelay: TimeInterval {
+        get {
+            return _riotCurrentDelay
+        }
+        set {
+            if abs(newValue - _riotCurrentDelay) < 0.001 {
+                return
+            }
+            _riotCurrentDelay = newValue
+            if _riotAudioDelay != nil {
+                _riotAudioDelay.delay = _riotCurrentDelay
+            }
+        }
+    }
+
+    var riotSilenceRemaining: Int? {
+        guard let riotAudioDelay = _riotAudioDelay else {
+            return nil
+        }
+        return riotAudioDelay.silenceRemaining?.intValue
     }
 }

@@ -258,6 +258,9 @@ extension Engine {
                 rtcConfiguration.iceTransportPolicy = .relay
             }
 
+            // RIOT: Experimental configuration.
+            rtcConfiguration.audioJitterBufferMaxPackets = 5
+
             return rtcConfiguration
         }
 

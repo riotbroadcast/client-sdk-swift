@@ -299,6 +299,9 @@ public class AudioManager: Loggable {
                 configuration.categoryOptions = []
             }
 
+            // RIOT: Extra configuration.
+            configuration.ioBufferDuration = 0.001
+
             var setActive: Bool?
 
             if newState.trackState != .none, oldState.trackState == .none {
