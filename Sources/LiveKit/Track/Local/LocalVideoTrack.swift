@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,9 +74,8 @@ public extension LocalVideoTrack {
 }
 
 public extension LocalVideoTrack {
-    var publishOptions: PublishOptions? { super._publishOptions }
-
-    var publishState: Track.PublishState { super._publishState }
+    var publishOptions: TrackPublishOptions? { super._state.lastPublishOptions }
+    var publishState: Track.PublishState { super._state.publishState }
 }
 
 public extension LocalVideoTrack {

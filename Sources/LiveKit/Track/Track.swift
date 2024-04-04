@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -79,10 +79,13 @@ public class Track: NSObject, Loggable {
     public var sid: Sid? { _state.sid }
 
     @objc
-    public var muted: Bool { _state.muted }
+    public var isMuted: Bool { _state.isMuted }
 
     @objc
     public var statistics: TrackStatistics? { _state.statistics }
+
+    @objc
+    public var simulcastStatistics: [VideoCodec: TrackStatistics] { _state.simulcastStatistics }
 
     /// Dimensions of the video (only if video track)
     @objc
@@ -96,25 +99,14 @@ public class Track: NSObject, Loggable {
 
     // MARK: - Internal
 
-    public let delegates = MulticastDelegate<TrackDelegate>()
-
-    /// Only for ``LocalTrack``s.
-    private(set) var _publishState: PublishState = .unpublished
-
-    /// ``publishOptions`` used for this track if already published.
-    /// Only for ``LocalTrack``s.
-    var _publishOptions: PublishOptions?
+    let delegates = MulticastDelegate<TrackDelegate>(label: "TrackDelegate")
 
     let mediaTrack: LKRTCMediaStreamTrack
 
-    private(set) var rtpSender: LKRTCRtpSender?
-    private(set) var rtpReceiver: LKRTCRtpReceiver?
-
     // Weak reference to all VideoViews attached to this track. Must be accessed from main thread.
     var videoRenderers = NSHashTable<VideoRenderer>.weakObjects()
-    // internal var rtcVideoRenderers = NSHashTable<RTCVideoRenderer>.weakObjects()
 
-    struct State: Equatable {
+    struct State {
         let name: String
         let kind: Kind
         let source: Source
@@ -123,17 +115,27 @@ public class Track: NSObject, Loggable {
         var dimensions: Dimensions?
         var videoFrame: VideoFrame?
         var trackState: TrackState = .stopped
-        var muted: Bool = false
+        var isMuted: Bool = false
         var statistics: TrackStatistics?
+        var simulcastStatistics: [VideoCodec: TrackStatistics] = [:]
         var reportStatistics: Bool = false
+
+        // Only for LocalTracks
+        var lastPublishOptions: TrackPublishOptions?
+        var publishState: PublishState = .unpublished
+
+        weak var transport: Transport?
+        var videoCodec: VideoCodec?
+        var rtpSender: LKRTCRtpSender?
+        var rtpSenderForCodec: [VideoCodec: LKRTCRtpSender] = [:] // simulcastSender
+        var rtpReceiver: LKRTCRtpReceiver?
     }
 
-    var _state: StateSync<State>
+    let _state: StateSync<State>
 
     // MARK: - Private
 
-    private weak var transport: Transport?
-    private let statisticsTimer = DispatchQueueTimer(timeInterval: 1, queue: .liveKitWebRTC)
+    private let _statisticsTimer = AsyncTimer(interval: 1.0)
 
     init(name: String,
          kind: Kind,
@@ -158,7 +160,7 @@ public class Track: NSObject, Loggable {
             guard let self else { return }
 
             if oldState.dimensions != newState.dimensions {
-                log("Track.dimensions \(String(describing: oldState.dimensions)) -> \(String(describing: newState.dimensions))")
+                self.log("Track.dimensions \(String(describing: oldState.dimensions)) -> \(String(describing: newState.dimensions))")
             }
 
             self.delegates.notify {
@@ -167,47 +169,49 @@ public class Track: NSObject, Loggable {
                 }
             }
 
-            if newState.statistics != oldState.statistics, let statistics = newState.statistics {
-                self.delegates.notify { $0.track?(self, didUpdateStatistics: statistics) }
+            if newState.statistics != oldState.statistics || newState.simulcastStatistics != oldState.simulcastStatistics,
+               let statistics = newState.statistics
+            {
+                self.delegates.notify { $0.track?(self, didUpdateStatistics: statistics, simulcastStatistics: newState.simulcastStatistics) }
             }
         }
+    }
 
-        statisticsTimer.handler = { [weak self] in
-            self?.onStatsTimer()
+    func set(transport: Transport?, rtpSender: LKRTCRtpSender?) async {
+        _state.mutate {
+            $0.transport = transport
+            $0.rtpSender = rtpSender
+        }
+        await _resumeOrSuspendStatisticsTimer()
+    }
+
+    func set(transport: Transport?, rtpReceiver: LKRTCRtpReceiver?) async {
+        _state.mutate {
+            $0.transport = transport
+            $0.rtpReceiver = rtpReceiver
+        }
+        await _resumeOrSuspendStatisticsTimer()
+    }
+
+    private func _resumeOrSuspendStatisticsTimer() async {
+        let shouldStart = _state.read {
+            $0.reportStatistics && ($0.rtpSender != nil || $0.rtpReceiver != nil)
         }
 
-        resumeOrSuspendStatisticsTimer()
-    }
-
-    deinit {
-        statisticsTimer.suspend()
-        log("sid: \(String(describing: sid))")
-    }
-
-    func set(transport: Transport?, rtpSender: LKRTCRtpSender?) {
-        self.transport = transport
-        self.rtpSender = rtpSender
-        resumeOrSuspendStatisticsTimer()
-    }
-
-    func set(transport: Transport?, rtpReceiver: LKRTCRtpReceiver?) {
-        self.transport = transport
-        self.rtpReceiver = rtpReceiver
-        resumeOrSuspendStatisticsTimer()
-    }
-
-    func resumeOrSuspendStatisticsTimer() {
-        if _state.reportStatistics, rtpSender != nil || rtpReceiver != nil {
-            statisticsTimer.resume()
+        if shouldStart {
+            await _statisticsTimer.setTimerBlock { [weak self] in
+                await self?._onStatsTimer()
+            }
+            await _statisticsTimer.restart()
         } else {
-            statisticsTimer.suspend()
+            await _statisticsTimer.cancel()
         }
     }
 
     @objc
-    public func set(reportStatistics: Bool) {
+    public func set(reportStatistics: Bool) async {
         _state.mutate { $0.reportStatistics = reportStatistics }
-        resumeOrSuspendStatisticsTimer()
+        await _resumeOrSuspendStatisticsTimer()
     }
 
     func set(trackState: TrackState) {
@@ -262,8 +266,8 @@ public class Track: NSObject, Loggable {
              notify _notify: Bool = true,
              shouldSendSignal: Bool = false)
     {
-        guard _state.muted != newValue else { return }
-        _state.mutate { $0.muted = newValue }
+        guard _state.isMuted != newValue else { return }
+        _state.mutate { $0.isMuted = newValue }
 
         if newValue {
             // clear video frame cache if muted
@@ -271,8 +275,10 @@ public class Track: NSObject, Loggable {
         }
 
         if _notify {
-            delegates.notify(label: { "track.didUpdate muted: \(newValue)" }) {
-                $0.track?(self, didUpdate: newValue, shouldSendSignal: shouldSendSignal)
+            delegates.notify(label: { "track.didUpdateIsMuted: \(newValue)" }) { delegate in
+                if let delegate = delegate as? TrackDelegateInternal {
+                    delegate.track(self, didUpdateIsMuted: newValue, shouldSendSignal: shouldSendSignal)
+                }
             }
         }
     }
@@ -284,8 +290,8 @@ public class Track: NSObject, Loggable {
     func onPublish() async throws -> Bool {
         // For LocalTrack only...
         guard self is LocalTrack else { return false }
-        guard _publishState != .published else { return false }
-        _publishState = .published
+        guard _state.publishState != .published else { return false }
+        _state.mutate { $0.publishState = .published }
         return true
     }
 
@@ -294,8 +300,8 @@ public class Track: NSObject, Loggable {
     func onUnpublish() async throws -> Bool {
         // For LocalTrack only...
         guard self is LocalTrack else { return false }
-        guard _publishState != .unpublished else { return false }
-        _publishState = .unpublished
+        guard _state.publishState != .unpublished else { return false }
+        _state.mutate { $0.publishState = .unpublished }
         return true
     }
 }
@@ -311,8 +317,8 @@ extension Track {
         _state.mutate { $0.dimensions = newValue }
 
         guard let videoTrack = self as? VideoTrack else { return true }
-        delegates.notify(label: { "track.didUpdate dimensions: \(newValue == nil ? "nil" : String(describing: newValue))" }) {
-            $0.track?(videoTrack, didUpdate: newValue)
+        delegates.notify(label: { "track.didUpdateDimensions: \(newValue == nil ? "nil" : String(describing: newValue))" }) {
+            $0.track?(videoTrack, didUpdateDimensions: newValue)
         }
 
         return true
@@ -332,7 +338,7 @@ extension Track {
     //
     func _mute() async throws {
         // LocalTrack only, already muted
-        guard self is LocalTrack, !muted else { return }
+        guard self is LocalTrack, !isMuted else { return }
         try await disable()
         try await stop()
         set(muted: true, shouldSendSignal: true)
@@ -340,7 +346,7 @@ extension Track {
 
     func _unmute() async throws {
         // LocalTrack only, already un-muted
-        guard self is LocalTrack, muted else { return }
+        guard self is LocalTrack, isMuted else { return }
         try await enable()
         try await start()
         set(muted: false, shouldSendSignal: true)
@@ -359,8 +365,9 @@ extension Track {
             return
         }
 
-        // must always be called on main thread
-        assert(Thread.current.isMainThread, "must be called on main thread")
+        if !Thread.current.isMainThread {
+            log("Must be called on main thread", .error)
+        }
 
         videoRenderers.add(videoRenderer)
         rtcVideoTrack.add(VideoRendererAdapter(target: videoRenderer))
@@ -372,8 +379,9 @@ extension Track {
             return
         }
 
-        // must always be called on main thread
-        assert(Thread.current.isMainThread, "must be called on main thread")
+        if !Thread.current.isMainThread {
+            log("Must be called on main thread", .error)
+        }
 
         videoRenderers.remove(videoRenderer)
         rtcVideoTrack.remove(VideoRendererAdapter(target: videoRenderer))
@@ -384,7 +392,7 @@ extension Track {
 
 extension Track: Identifiable {
     public var id: String {
-        "\(type(of: self))-\(sid ?? String(hash))"
+        "\(type(of: self))-\(sid?.stringValue ?? String(hash))"
     }
 }
 
@@ -435,29 +443,45 @@ public extension InboundRtpStreamStatistics {
 }
 
 extension Track {
-    func onStatsTimer() {
+    func _onStatsTimer() async {
+        // Read from state
+        let (transport, rtpSender, rtpReceiver, simulcastRtpSenders) = _state.read { ($0.transport, $0.rtpSender, $0.rtpReceiver, $0.rtpSenderForCodec) }
+
+        // Transport is required...
         guard let transport else { return }
 
-        statisticsTimer.suspend()
+        // Main statistics
 
-        Task {
-            defer { statisticsTimer.resume() }
+        var statisticsReport: LKRTCStatisticsReport?
+        let prevStatistics = _state.read { $0.statistics }
 
-            var statisticsReport: LKRTCStatisticsReport?
-            let prevStatistics = _state.read { $0.statistics }
+        if let sender = rtpSender {
+            statisticsReport = await transport.statistics(for: sender)
+        } else if let receiver = rtpReceiver {
+            statisticsReport = await transport.statistics(for: receiver)
+        }
 
-            if let sender = rtpSender {
-                statisticsReport = await transport.statistics(for: sender)
-            } else if let receiver = rtpReceiver {
-                statisticsReport = await transport.statistics(for: receiver)
-            }
+        guard let statisticsReport else {
+            log("statisticsReport is nil", .error)
+            return
+        }
 
-            assert(statisticsReport != nil, "statisticsReport is nil")
-            guard let statisticsReport else { return }
+        let trackStatistics = TrackStatistics(from: Array(statisticsReport.statistics.values), prevStatistics: prevStatistics)
 
-            let trackStatistics = TrackStatistics(from: Array(statisticsReport.statistics.values), prevStatistics: prevStatistics)
+        // Simulcast statistics
 
-            _state.mutate { $0.statistics = trackStatistics }
+        let prevSimulcastStatistics = _state.read { $0.simulcastStatistics }
+        var _simulcastStatistics: [VideoCodec: TrackStatistics] = [:]
+
+        for _sender in simulcastRtpSenders {
+            let _report = await transport.statistics(for: _sender.value)
+            _simulcastStatistics[_sender.key] = TrackStatistics(from: Array(_report.statistics.values),
+                                                                prevStatistics: prevSimulcastStatistics[_sender.key])
+        }
+
+        _state.mutate {
+            $0.statistics = trackStatistics
+            $0.simulcastStatistics = _simulcastStatistics
         }
     }
 }

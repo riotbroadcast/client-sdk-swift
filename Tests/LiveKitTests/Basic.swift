@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,30 +14,11 @@
  * limitations under the License.
  */
 
-import Foundation
+@testable import LiveKit
+import XCTest
 
-@_implementationOnly import WebRTC
-
-public typealias Sid = String
-
-@objc
-public enum Reliability: Int {
-    case reliable
-    case lossy
-}
-
-extension Reliability {
-    func toPBType() -> Livekit_DataPacket.Kind {
-        if self == .lossy { return .lossy }
-        return .reliable
+class Basic: XCTestCase {
+    func testReadVersion() {
+        print("LiveKitSDK.version: \(LiveKitSDK.version)")
     }
-}
-
-public enum SimulateScenario {
-    case nodeFailure
-    case migration
-    case serverLeave
-    case speakerUpdate(seconds: Int)
-    case forceTCP
-    case forceTLS
 }

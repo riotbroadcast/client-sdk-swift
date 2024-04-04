@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ import Foundation
 @_implementationOnly import WebRTC
 
 @objc
-public class TrackStatistics: NSObject {
+public class TrackStatistics: NSObject, Loggable {
     public let codec: [CodecStatistics]
     public let transportStats: TransportStatistics?
     public let videoSource: [VideoSourceStatistics]
@@ -48,17 +48,28 @@ public class TrackStatistics: NSObject {
         remoteInboundRtpStream = stats.compactMap { $0 as? RemoteInboundRtpStreamStatistics }
         remoteOutboundRtpStream = stats.compactMap { $0 as? RemoteOutboundRtpStreamStatistics }
 
-        let t = stats.compactMap { $0 as? TransportStatistics }
-        assert(t.count <= 1, "More than 1 TransportStatistics exists")
-        transportStats = t.first
+        let transportStatistics = stats.compactMap { $0 as? TransportStatistics }
+        transportStats = transportStatistics.first
 
-        let l = stats.compactMap { $0 as? LocalIceCandidateStatistics }
-        assert(l.count <= 1, "More than 1 LocalIceCandidateStatistics exists")
-        localIceCandidate = l.first
+        let localIceCandidates = stats.compactMap { $0 as? LocalIceCandidateStatistics }
+        localIceCandidate = localIceCandidates.first
 
-        let r = stats.compactMap { $0 as? RemoteIceCandidateStatistics }
-        assert(r.count <= 1, "More than 1 RemoteIceCandidateStatistics exists")
-        remoteIceCandidate = r.first
+        let remoteIceCandidates = stats.compactMap { $0 as? RemoteIceCandidateStatistics }
+        remoteIceCandidate = remoteIceCandidates.first
+
+        super.init()
+
+        if transportStatistics.count > 1 {
+            log("More than 1 TransportStatistics exists", .warning)
+        }
+
+        if localIceCandidates.count > 1 {
+            log("More than 1 LocalIceCandidateStatistics exists", .warning)
+        }
+
+        if remoteIceCandidates.count > 1 {
+            log("More than 1 RemoteIceCandidateStatistics exists", .warning)
+        }
     }
 }
 
@@ -104,7 +115,7 @@ public extension TrackStatistics {
 extension OutboundRtpStreamStatistics {
     /// Index of the rid.
     var ridIndex: Int {
-        guard let rid, let idx = VideoQuality.rids.firstIndex(of: rid) else {
+        guard let rid, let idx = VideoQuality.RIDs.firstIndex(of: rid) else {
             return -1
         }
         return idx

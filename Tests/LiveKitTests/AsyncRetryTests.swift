@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,14 +22,13 @@ class AsyncRetryTests: XCTestCase {
 
     override func tearDown() async throws {}
 
-    func testRetry1() async throws {
-        let test = Task.retrying(maxRetryCount: 1) { totalAttempts, currentAttempt in
-            print("[TEST] Retrying with remaining attemps: \(currentAttempt)/\(totalAttempts)...")
-            throw EngineError.state(message: "Test error")
-            return "Complete"
-        }
-
-        let value = try await test.value
-        print("[TEST] Ended with value: '\(value)'...")
-    }
+//    func testRetry1() async throws {
+//        let test = Task.retrying(totalAttempts: 3) { currentAttempt, totalAttempts in
+//            print("[TEST] Retrying with remaining attemps: \(currentAttempt)/\(totalAttempts)...")
+//            throw LiveKitError(.invalidState, message: "Test error")
+//        }
+//
+//        let value: () = try await test.value
+//        print("[TEST] Ended with value: '\(value)'...")
+//    }
 }

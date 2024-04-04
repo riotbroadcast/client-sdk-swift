@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,9 +55,9 @@ class Utils {
     /// Returns current OS.
     static func os() -> OS {
         #if os(macOS)
-            .macOS
+        .macOS
         #elseif os(iOS)
-            .iOS
+        .iOS
         #endif
     }
 
@@ -79,35 +79,35 @@ class Utils {
     /// format: `MacBookPro18,3`, `iPhone13,3` or `iOSSimulator,arm64`
     static func modelIdentifier() -> String? {
         #if os(macOS)
-            let service = IOServiceGetMatchingService(kIOMasterPortDefault,
-                                                      IOServiceMatching("IOPlatformExpertDevice"))
-            defer { IOObjectRelease(service) }
+        let service = IOServiceGetMatchingService(kIOMasterPortDefault,
+                                                  IOServiceMatching("IOPlatformExpertDevice"))
+        defer { IOObjectRelease(service) }
 
-            guard let modelData = IORegistryEntryCreateCFProperty(service,
-                                                                  "model" as CFString,
-                                                                  kCFAllocatorDefault,
-                                                                  0).takeRetainedValue() as? Data
-            else {
-                return nil
-            }
+        guard let modelData = IORegistryEntryCreateCFProperty(service,
+                                                              "model" as CFString,
+                                                              kCFAllocatorDefault,
+                                                              0).takeRetainedValue() as? Data
+        else {
+            return nil
+        }
 
-            return modelData.withUnsafeBytes { (pointer: UnsafeRawBufferPointer) -> String? in
-                guard let cString = pointer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
-                return String(cString: cString)
-            }
+        return modelData.withUnsafeBytes { (pointer: UnsafeRawBufferPointer) -> String? in
+            guard let cString = pointer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return nil }
+            return String(cString: cString)
+        }
         #elseif os(iOS)
-            var systemInfo = utsname()
-            uname(&systemInfo)
-            let machineMirror = Mirror(reflecting: systemInfo.machine)
-            let identifier = machineMirror.children.reduce("") { identifier, element in
-                guard let value = element.value as? Int8, value != 0 else { return identifier }
-                return identifier + String(UnicodeScalar(UInt8(value)))
-            }
-            // for simulator, the following codes are returned
-            guard !["i386", "x86_64", "arm64"].contains(where: { $0 == identifier }) else {
-                return "iOSSimulator,\(identifier)"
-            }
-            return identifier
+        var systemInfo = utsname()
+        uname(&systemInfo)
+        let machineMirror = Mirror(reflecting: systemInfo.machine)
+        let identifier = machineMirror.children.reduce("") { identifier, element in
+            guard let value = element.value as? Int8, value != 0 else { return identifier }
+            return identifier + String(UnicodeScalar(UInt8(value)))
+        }
+        // for simulator, the following codes are returned
+        guard !["i386", "x86_64", "arm64"].contains(where: { $0 == identifier }) else {
+            return "iOSSimulator,\(identifier)"
+        }
+        return identifier
         #endif
     }
 
@@ -173,7 +173,7 @@ class Utils {
             URLQueryItem(name: "access_token", value: token),
             URLQueryItem(name: "protocol", value: connectOptions.protocolVersion.description),
             URLQueryItem(name: "sdk", value: "swift"),
-            URLQueryItem(name: "version", value: LiveKit.version),
+            URLQueryItem(name: "version", value: LiveKitSDK.version),
             // Additional client info
             URLQueryItem(name: "os", value: String(describing: os())),
             URLQueryItem(name: "os_version", value: osVersionString()),
@@ -201,32 +201,29 @@ class Utils {
         return builder.url
     }
 
-    static func createDebounceFunc(on queue: DispatchQueue,
-                                   wait: TimeInterval,
-                                   onCreateWorkItem: ((DispatchWorkItem) -> Void)? = nil,
-                                   fnc: @escaping @convention(block) () -> Void) -> DebouncFunc
-    {
-        var workItem: DispatchWorkItem?
-        return {
-            workItem?.cancel()
-            workItem = DispatchWorkItem { fnc() }
-            onCreateWorkItem?(workItem!)
-            queue.asyncAfter(deadline: .now() + wait, execute: workItem!)
-        }
-    }
-
-    static func computeEncodings(
+    static func computeVideoEncodings(
         dimensions: Dimensions,
         publishOptions: VideoPublishOptions?,
-        isScreenShare: Bool = false
+        isScreenShare: Bool = false,
+        overrideVideoCodec: VideoCodec? = nil
     ) -> [LKRTCRtpEncodingParameters] {
         let publishOptions = publishOptions ?? VideoPublishOptions()
         let preferredEncoding: VideoEncoding? = isScreenShare ? publishOptions.screenShareEncoding : publishOptions.encoding
         let encoding = preferredEncoding ?? dimensions.computeSuggestedPreset(in: dimensions.computeSuggestedPresets(isScreenShare: isScreenShare))
 
-        guard publishOptions.simulcast else {
-            return [Engine.createRtpEncodingParameters(encoding: encoding, scaleDownBy: 1)]
+        let videoCodec = overrideVideoCodec ?? publishOptions.preferredCodec
+
+        if let videoCodec, videoCodec.isSVC {
+            // SVC mode
+            logger.log("Using SVC mode", type: Utils.self)
+            return [Engine.createRtpEncodingParameters(encoding: encoding, scalabilityMode: .L3T3_KEY)]
+        } else if !publishOptions.simulcast {
+            // Not-simulcast mode
+            logger.log("Simulcast not enabled", type: Utils.self)
+            return [Engine.createRtpEncodingParameters(encoding: encoding)]
         }
+
+        // Continue to simulcast encoding computation...
 
         let baseParameters = VideoParameters(dimensions: dimensions,
                                              encoding: encoding)

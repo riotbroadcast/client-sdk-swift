@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,23 +14,23 @@
  * limitations under the License.
  */
 
-@testable import LiveKit
-import XCTest
+import Foundation
 
-final class LiveKitTests: XCTestCase {
-    func testConnect() {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct
-        // results.
-        /*
-         let connectOptions =  ConnectOptions(token: "some-token") { builder in
-         builder.roomName = "my-room"
-         }
-         */
-        XCTAssertEqual(true, true)
+actor SerialRunnerActor<Value: Sendable> {
+    private var previousTask: Task<Value, Error>?
+
+    func run(block: @Sendable @escaping () async throws -> Value) async throws -> Value {
+        let task = Task { [previousTask] in
+            let _ = try? await previousTask?.value
+            return try await block()
+        }
+
+        previousTask = task
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
-
-    static var allTests = [
-        ("testExample", testConnect),
-    ]
 }

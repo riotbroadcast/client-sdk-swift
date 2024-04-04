@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,11 +30,18 @@ public protocol MulticastDelegateProtocol {
 ///
 /// > Note: `NSHashTable` may not immediately deinit the un-referenced object, due to Apple's implementation, therefore `.count` is unreliable.
 public class MulticastDelegate<T>: NSObject, Loggable {
-    let multicastQueue: DispatchQueue
-    private let set = NSHashTable<AnyObject>.weakObjects()
+    private let _queue: DispatchQueue
+    private let _set = NSHashTable<AnyObject>.weakObjects()
 
-    init(label: String = "livekit.multicast", qos: DispatchQoS = .default) {
-        multicastQueue = DispatchQueue(label: label, qos: qos, attributes: [])
+    init(label: String, qos: DispatchQoS = .default) {
+        _queue = DispatchQueue(label: "LiveKitSDK.Multicast.\(label)", qos: qos, attributes: [])
+    }
+
+    public var allDelegates: [T] {
+        _queue.sync { [weak self] in
+            guard let self else { return [] }
+            return self._set.allObjects.compactMap { $0 as? T }
+        }
     }
 
     /// Add a single delegate.
@@ -44,9 +51,9 @@ public class MulticastDelegate<T>: NSObject, Loggable {
             return
         }
 
-        multicastQueue.sync { [weak self] in
+        _queue.sync { [weak self] in
             guard let self else { return }
-            self.set.add(delegate)
+            self._set.add(delegate)
         }
     }
 
@@ -59,34 +66,31 @@ public class MulticastDelegate<T>: NSObject, Loggable {
             return
         }
 
-        multicastQueue.sync { [weak self] in
+        _queue.sync { [weak self] in
             guard let self else { return }
-            self.set.remove(delegate)
+            self._set.remove(delegate)
         }
     }
 
     /// Remove all delegates.
     public func removeAllDelegates() {
-        multicastQueue.sync { [weak self] in
+        _queue.sync { [weak self] in
             guard let self else { return }
-            self.set.removeAllObjects()
+            self._set.removeAllObjects()
         }
     }
 
     /// Notify delegates inside the queue.
     /// Label is captured inside the queue for thread safety reasons.
     func notify(label: (() -> String)? = nil, _ fnc: @escaping (T) -> Void) {
-        multicastQueue.async {
+        _queue.async {
             if let label {
-                self.log("[notify] \(label())", .debug)
+                self.log("[notify] \(label())", .trace)
             }
 
-            for delegate in self.set.allObjects {
-                guard let delegate = delegate as? T else {
-                    self.log("MulticastDelegate: skipping notify for \(delegate), not a type of \(T.self)", .warning)
-                    continue
-                }
+            let delegates = self._set.allObjects.compactMap { $0 as? T }
 
+            for delegate in delegates {
                 fnc(delegate)
             }
         }

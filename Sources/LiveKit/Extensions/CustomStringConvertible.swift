@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import Foundation
 
 extension TrackSettings: CustomStringConvertible {
     public var description: String {
-        "TrackSettings(enabled: \(enabled), dimensions: \(dimensions), videoQuality: \(videoQuality))"
+        "TrackSettings(enabled: \(isEnabled), dimensions: \(dimensions), videoQuality: \(videoQuality))"
     }
 }
 
@@ -50,7 +50,7 @@ extension Livekit_TrackInfo: CustomStringConvertible {
             "source: \(source), " +
             "width: \(width), " +
             "height: \(height), " +
-            "muted: \(muted), " +
+            "isMuted: \(muted), " +
             "simulcast: \(simulcast), " +
             "codecs: \(codecs.map { String(describing: $0) }), " +
             "layers: \(layers.map { String(describing: $0) }))"
@@ -60,6 +60,12 @@ extension Livekit_TrackInfo: CustomStringConvertible {
 extension Livekit_SubscribedQuality: CustomStringConvertible {
     public var description: String {
         "SubscribedQuality(quality: \(quality), enabled: \(enabled))"
+    }
+}
+
+extension Livekit_SubscribedCodec: CustomStringConvertible {
+    public var description: String {
+        "SubscribedCodec(codec: \(codec), qualities: \(qualities.map { String(describing: $0) }.joined(separator: ", "))"
     }
 }
 
@@ -78,18 +84,47 @@ extension Livekit_ServerInfo: CustomStringConvertible {
 
 public extension Room {
     override var description: String {
-        "Room(sid: \(sid ?? "nil"), name: \(name ?? "nil"), serverVersion: \(serverVersion ?? "nil"), serverRegion: \(serverRegion ?? "nil"))"
+        "Room(sid: \(String(describing: sid)), name: \(name ?? "nil"), serverVersion: \(serverVersion ?? "nil"), serverRegion: \(serverRegion ?? "nil"))"
     }
 }
 
 public extension Participant {
     override var description: String {
-        "\(String(describing: type(of: self)))(sid: \(sid))"
+        "\(String(describing: type(of: self)))(sid: \(String(describing: sid)))"
     }
 }
 
 public extension Track {
     override var description: String {
-        "\(String(describing: type(of: self)))(sid: \(sid ?? "nil"), name: \(name), source: \(source))"
+        "\(String(describing: type(of: self)))(sid: \(String(describing: sid)), name: \(name), source: \(source))"
+    }
+}
+
+extension RTCPeerConnectionState {
+    var description: String {
+        switch self {
+        case .new: return ".new"
+        case .connecting: return ".connecting"
+        case .connected: return ".connected"
+        case .disconnected: return ".disconnected"
+        case .failed: return ".failed"
+        case .closed: return ".closed"
+        @unknown default: return "unknown"
+        }
+    }
+}
+
+extension ReconnectMode: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .quick: return ".quick"
+        case .full: return ".full"
+        }
+    }
+}
+
+extension Livekit_SignalResponse: CustomStringConvertible {
+    var description: String {
+        "Livekit_SignalResponse(\(String(describing: message)))"
     }
 }

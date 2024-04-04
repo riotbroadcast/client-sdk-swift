@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,10 +20,14 @@ extension Collection<VideoParameters> {
     func suggestedPresetIndex(dimensions: Dimensions? = nil,
                               videoEncoding: VideoEncoding? = nil) -> Int
     {
-        // self must at lease have 1 element
-        assert(!isEmpty)
-        // dimensions or videoEndocing is required
-        assert(dimensions != nil || videoEncoding != nil)
+        if isEmpty {
+            // Must have at least 1 element
+            logger.log("isEmpty", .error, type: (any Collection).self)
+        }
+
+        if dimensions == nil, videoEncoding == nil {
+            logger.log("dimensions or videoEncoding parameter is required", .error, type: (any Collection).self)
+        }
 
         var result = 0
         for preset in self {

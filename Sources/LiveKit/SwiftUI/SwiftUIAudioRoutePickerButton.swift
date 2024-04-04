@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,9 +31,9 @@ public struct SwiftUIAudioRoutePickerButton: NativeViewRepresentable {
         let routePickerView = AVRoutePickerView()
 
         #if os(iOS)
-            routePickerView.prioritizesVideoDevices = false
+        routePickerView.prioritizesVideoDevices = false
         #elseif os(macOS)
-            routePickerView.isRoutePickerButtonBordered = false
+        routePickerView.isRoutePickerButtonBordered = false
         #endif
 
         return routePickerView

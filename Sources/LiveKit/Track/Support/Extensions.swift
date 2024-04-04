@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import CoreImage
 import Foundation
 
 #if canImport(ReplayKit)
-    import ReplayKit
+import ReplayKit
 #endif
 
 public extension CIImage {
@@ -97,22 +97,23 @@ public extension CGImage {
 }
 
 #if os(iOS)
-    @available(iOS 12, *)
-    public extension RPSystemBroadcastPickerView {
-        /// Convenience function to show broadcast extension picker
-        static func show(for preferredExtension: String? = nil,
-                         showsMicrophoneButton: Bool = true)
-        {
-            // Must be called on main thread
-            assert(Thread.current.isMainThread, "must be called on main thread")
+@available(iOS 12, *)
+public extension RPSystemBroadcastPickerView {
+    /// Convenience function to show broadcast extension picker
+    static func show(for preferredExtension: String? = nil,
+                     showsMicrophoneButton: Bool = true)
+    {
+        if !Thread.current.isMainThread {
+            logger.log("Must be called on main thread", .error, type: RPSystemBroadcastPickerView.self)
+        }
 
-            let view = RPSystemBroadcastPickerView()
-            view.preferredExtension = preferredExtension
-            view.showsMicrophoneButton = showsMicrophoneButton
-            let selector = NSSelectorFromString("buttonPressed:")
-            if view.responds(to: selector) {
-                view.perform(selector, with: nil)
-            }
+        let view = RPSystemBroadcastPickerView()
+        view.preferredExtension = preferredExtension
+        view.showsMicrophoneButton = showsMicrophoneButton
+        let selector = NSSelectorFromString("buttonPressed:")
+        if view.responds(to: selector) {
+            view.perform(selector, with: nil)
         }
     }
+}
 #endif

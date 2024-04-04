@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 LiveKit
+ * Copyright 2024 LiveKit
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,30 +17,31 @@
 import Foundation
 
 #if canImport(Network)
-    import Network
+import Network
 #endif
 
 @_implementationOnly import WebRTC
 
-class Engine: MulticastDelegate<EngineDelegate> {
+class Engine: Loggable {
     // MARK: - Public
 
     public typealias ConditionEvalFunc = (_ newState: State, _ oldState: State?) -> Bool
 
-    struct State: Equatable {
+    struct State {
         var connectOptions: ConnectOptions
         var url: String?
         var token: String?
         // preferred reconnect mode which will be used only for next attempt
-        var nextPreferredReconnectMode: ReconnectMode?
-        var reconnectMode: ReconnectMode?
-        var connectionState: ConnectionState = .disconnected()
+        var nextReconnectMode: ReconnectMode?
+        var isReconnectingWithMode: ReconnectMode?
+        var connectionState: ConnectionState = .disconnected
+        var disconnectError: LiveKitError?
         var connectStopwatch = Stopwatch(label: "connect")
         var hasPublished: Bool = false
-    }
 
-    let primaryTransportConnectedCompleter = AsyncCompleter<Void>(label: "Primary transport connect", timeOut: .defaultTransportState)
-    let publisherTransportConnectedCompleter = AsyncCompleter<Void>(label: "Publisher transport connect", timeOut: .defaultTransportState)
+        let primaryTransportConnectedCompleter = AsyncCompleter<Void>(label: "Primary transport connect", defaultTimeOut: .defaultTransportState)
+        let publisherTransportConnectedCompleter = AsyncCompleter<Void>(label: "Publisher transport connect", defaultTimeOut: .defaultTransportState)
+    }
 
     public var _state: StateSync<State>
 
@@ -54,6 +55,8 @@ class Engine: MulticastDelegate<EngineDelegate> {
 
     // MARK: - Private
 
+    let _delegate = AsyncSerialDelegate<EngineDelegate>()
+
     private struct ConditionalExecutionEntry {
         let executeCondition: ConditionEvalFunc
         let removeCondition: ConditionEvalFunc
@@ -64,8 +67,16 @@ class Engine: MulticastDelegate<EngineDelegate> {
 
     // MARK: - DataChannels
 
-    public internal(set) var subscriberDC = DataChannelPair(target: .subscriber)
-    public internal(set) var publisherDC = DataChannelPair(target: .publisher)
+    lazy var subscriberDataChannel: DataChannelPairActor = .init(onDataPacket: { [weak self] dataPacket in
+        guard let self else { return }
+        switch dataPacket.value {
+        case let .speaker(update): self._delegate.notifyAsync { await $0.engine(self, didUpdateSpeakers: update.speakers) }
+        case let .user(userPacket): self._delegate.notifyAsync { await $0.engine(self, didReceiveUserPacket: userPacket) }
+        default: return
+        }
+    })
+
+    let publisherDataChannel = DataChannelPairActor()
 
     private var _blockProcessQueue = DispatchQueue(label: "LiveKitSDK.engine.pendingBlocks",
                                                    qos: .default)
@@ -74,26 +85,26 @@ class Engine: MulticastDelegate<EngineDelegate> {
 
     init(connectOptions: ConnectOptions) {
         _state = StateSync(State(connectOptions: connectOptions))
-        super.init()
 
         // log sdk & os versions
-        log("sdk: \(LiveKit.version), os: \(String(describing: Utils.os()))(\(Utils.osVersionString())), modelId: \(String(describing: Utils.modelIdentifier() ?? "unknown"))")
+        log("sdk: \(LiveKitSDK.version), os: \(String(describing: Utils.os()))(\(Utils.osVersionString())), modelId: \(String(describing: Utils.modelIdentifier() ?? "unknown"))")
 
-        signalClient.add(delegate: self)
-        ConnectivityListener.shared.add(delegate: self)
+        signalClient._delegate.set(delegate: self)
 
         // trigger events when state mutates
         _state.onDidMutate = { [weak self] newState, oldState in
 
             guard let self else { return }
 
-            assert(!(newState.connectionState == .reconnecting && newState.reconnectMode == .none), "reconnectMode should not be .none")
-
-            if (newState.connectionState != oldState.connectionState) || (newState.reconnectMode != oldState.reconnectMode) {
-                self.log("connectionState: \(oldState.connectionState) -> \(newState.connectionState), reconnectMode: \(String(describing: newState.reconnectMode))")
+            if newState.connectionState == .reconnecting, newState.isReconnectingWithMode == nil {
+                self.log("reconnectMode should not be .none", .error)
             }
 
-            self.notify { $0.engine(self, didMutate: newState, oldState: oldState) }
+            if (newState.connectionState != oldState.connectionState) || (newState.isReconnectingWithMode != oldState.isReconnectingWithMode) {
+                self.log("connectionState: \(oldState.connectionState) -> \(newState.connectionState), reconnectMode: \(String(describing: newState.isReconnectingWithMode))")
+            }
+
+            self._delegate.notifyAsync { await $0.engine(self, didMutateState: newState, oldState: oldState) }
 
             // execution control
             self._blockProcessQueue.async { [weak self] in
@@ -114,21 +125,10 @@ class Engine: MulticastDelegate<EngineDelegate> {
                 }
             }
         }
-
-        subscriberDC.onDataPacket = { [weak self] (dataPacket: Livekit_DataPacket) in
-
-            guard let self else { return }
-
-            switch dataPacket.value {
-            case let .speaker(update): self.notify { $0.engine(self, didUpdate: update.speakers) }
-            case let .user(userPacket): self.notify { $0.engine(self, didReceive: userPacket) }
-            default: return
-            }
-        }
     }
 
     deinit {
-        log()
+        log(nil, .trace)
     }
 
     // Connect sequence, resets existing state
@@ -162,27 +162,29 @@ class Engine: MulticastDelegate<EngineDelegate> {
                 $0.connectionState = .connected
             }
 
-        } catch is CancellationError {
-            // Cancelled by .user
-            try await cleanUp(reason: .user)
         } catch {
-            try await cleanUp(reason: .networkError(error))
+            try await cleanUp(withError: error)
+            // Re-throw error
+            throw error
         }
     }
 
     // cleanUp (reset) both Room & Engine's state
-    func cleanUp(reason: DisconnectReason? = nil, isFullReconnect: Bool = false) async throws {
+    func cleanUp(withError disconnectError: Error? = nil,
+                 isFullReconnect: Bool = false) async throws
+    {
         // This should never happen since Engine is owned by Room
-        let room = try await requireRoom()
+        let room = try requireRoom()
         // Call Room's cleanUp
-        await room.cleanUp(reason: reason, isFullReconnect: isFullReconnect)
+        await room.cleanUp(withError: disconnectError,
+                           isFullReconnect: isFullReconnect)
     }
 
     // Resets state of transports
     func cleanUpRTC() async {
         // Close data channels
-        publisherDC.close()
-        subscriberDC.close()
+        await publisherDataChannel.reset()
+        await subscriberDataChannel.reset()
 
         // Close transports
         await publisher?.close()
@@ -198,108 +200,132 @@ class Engine: MulticastDelegate<EngineDelegate> {
     func publisherShouldNegotiate() async throws {
         log()
 
-        let publisher = try await requirePublisher()
-        publisher.negotiate()
+        let publisher = try requirePublisher()
+        await publisher.negotiate()
         _state.mutate { $0.hasPublished = true }
     }
 
-    func send(userPacket: Livekit_UserPacket, reliability: Reliability = .reliable) async throws {
+    func send(userPacket: Livekit_UserPacket, kind: Livekit_DataPacket.Kind) async throws {
         func ensurePublisherConnected() async throws {
             guard subscriberPrimary else { return }
 
-            let publisher = try await requirePublisher()
+            let publisher = try requirePublisher()
 
             if !publisher.isConnected, publisher.connectionState != .connecting {
                 try await publisherShouldNegotiate()
             }
 
-            try await publisherTransportConnectedCompleter.wait()
-            try await publisherDC.openCompleter.wait()
+            try await _state.publisherTransportConnectedCompleter.wait()
+            try await publisherDataChannel.openCompleter.wait()
         }
 
         try await ensurePublisherConnected()
 
         // At this point publisher should be .connected and dc should be .open
-        assert(publisher?.isConnected ?? false, "publisher is not .connected")
-        assert(publisherDC.isOpen, "publisher data channel is not .open")
+        if !(publisher?.isConnected ?? false) {
+            log("publisher is not .connected", .error)
+        }
+
+        let dataChannelIsOpen = await publisherDataChannel.isOpen
+        if !dataChannelIsOpen {
+            log("publisher data channel is not .open", .error)
+        }
 
         // Should return true if successful
-        try publisherDC.send(userPacket: userPacket, reliability: reliability)
+        try await publisherDataChannel.send(userPacket: userPacket, kind: kind)
     }
 }
 
 // MARK: - Internal
 
 extension Engine {
-    func configureTransports(joinResponse: Livekit_JoinResponse) async throws {
-        log("Configuring transports...")
+    func configureTransports(connectResponse: SignalClient.ConnectResponse) async throws {
+        func makeConfiguration() -> LKRTCConfiguration {
+            let connectOptions = _state.connectOptions
 
-        guard subscriber == nil, publisher == nil else {
-            log("Transports are already configured")
-            return
+            // Make a copy, instead of modifying the user-supplied RTCConfiguration object.
+            let rtcConfiguration = LKRTCConfiguration.liveKitDefault()
+
+            // Set iceServers provided by the server
+            rtcConfiguration.iceServers = connectResponse.rtcIceServers
+
+            if !connectOptions.iceServers.isEmpty {
+                // Override with user provided iceServers
+                rtcConfiguration.iceServers = connectOptions.iceServers.map { $0.toRTCType() }
+            }
+
+            if connectResponse.clientConfiguration.forceRelay == .enabled {
+                rtcConfiguration.iceTransportPolicy = .relay
+            }
+
+            // RIOT: Experimental configuration.
+            rtcConfiguration.audioJitterBufferMaxPackets = 5
+
+            return rtcConfiguration
         }
 
-        // protocol v3
-        subscriberPrimary = joinResponse.subscriberPrimary
-        log("subscriberPrimary: \(joinResponse.subscriberPrimary)")
+        let rtcConfiguration = makeConfiguration()
 
-        let connectOptions = _state.connectOptions
+        if case let .join(joinResponse) = connectResponse {
+            log("Configuring transports with JOIN response...")
 
-        // Make a copy, instead of modifying the user-supplied RTCConfiguration object.
-        let rtcConfiguration = LKRTCConfiguration.liveKitDefault()
+            guard subscriber == nil, publisher == nil else {
+                log("Transports are already configured")
+                return
+            }
 
-        // Set iceServers provided by the server
-        rtcConfiguration.iceServers = joinResponse.iceServers.map { $0.toRTCType() }
+            // protocol v3
+            subscriberPrimary = joinResponse.subscriberPrimary
+            log("subscriberPrimary: \(joinResponse.subscriberPrimary)")
 
-        if !connectOptions.iceServers.isEmpty {
-            // Override with user provided iceServers
-            rtcConfiguration.iceServers = connectOptions.iceServers.map { $0.toRTCType() }
+            let subscriber = try Transport(config: rtcConfiguration,
+                                           target: .subscriber,
+                                           primary: subscriberPrimary,
+                                           delegate: self)
+
+            let publisher = try Transport(config: rtcConfiguration,
+                                          target: .publisher,
+                                          primary: !subscriberPrimary,
+                                          delegate: self)
+
+            await publisher.set { [weak self] offer in
+                guard let self else { return }
+                self.log("Publisher onOffer \(offer.sdp)")
+                try await self.signalClient.send(offer: offer)
+            }
+
+            // data over pub channel for backwards compatibility
+
+            let reliableDataChannel = await publisher.dataChannel(for: LKRTCDataChannel.labels.reliable,
+                                                                  configuration: Engine.createDataChannelConfiguration())
+
+            let lossyDataChannel = await publisher.dataChannel(for: LKRTCDataChannel.labels.lossy,
+                                                               configuration: Engine.createDataChannelConfiguration(maxRetransmits: 0))
+
+            await publisherDataChannel.set(reliable: reliableDataChannel)
+            await publisherDataChannel.set(lossy: lossyDataChannel)
+
+            log("dataChannel.\(String(describing: reliableDataChannel?.label)) : \(String(describing: reliableDataChannel?.channelId))")
+            log("dataChannel.\(String(describing: lossyDataChannel?.label)) : \(String(describing: lossyDataChannel?.channelId))")
+
+            if !subscriberPrimary {
+                // lazy negotiation for protocol v3+
+                try await publisherShouldNegotiate()
+            }
+
+            self.subscriber = subscriber
+            self.publisher = publisher
+
+        } else if case .reconnect = connectResponse {
+            log("[Connect] Configuring transports with RECONNECT response...")
+            guard let subscriber, let publisher else {
+                log("[Connect] Subscriber or Publisher is nil", .error)
+                return
+            }
+
+            try await subscriber.set(configuration: rtcConfiguration)
+            try await publisher.set(configuration: rtcConfiguration)
         }
-
-        if joinResponse.clientConfiguration.forceRelay == .enabled {
-            rtcConfiguration.iceTransportPolicy = .relay
-        }
-
-        // RIOT: Experimental configuration.
-        rtcConfiguration.audioJitterBufferMaxPackets = 5
-
-        let subscriber = try Transport(config: rtcConfiguration,
-                                       target: .subscriber,
-                                       primary: subscriberPrimary,
-                                       delegate: self)
-
-        let publisher = try Transport(config: rtcConfiguration,
-                                      target: .publisher,
-                                      primary: !subscriberPrimary,
-                                      delegate: self)
-
-        publisher.onOffer = { [weak self] offer in
-            guard let self else { return }
-            log("Publisher onOffer \(offer.sdp)")
-            try await signalClient.send(offer: offer)
-        }
-
-        // data over pub channel for backwards compatibility
-
-        let publisherReliableDC = publisher.dataChannel(for: LKRTCDataChannel.labels.reliable,
-                                                        configuration: Engine.createDataChannelConfiguration())
-
-        let publisherLossyDC = publisher.dataChannel(for: LKRTCDataChannel.labels.lossy,
-                                                     configuration: Engine.createDataChannelConfiguration(maxRetransmits: 0))
-
-        publisherDC.set(reliable: publisherReliableDC)
-        publisherDC.set(lossy: publisherLossyDC)
-
-        log("dataChannel.\(String(describing: publisherReliableDC?.label)) : \(String(describing: publisherReliableDC?.channelId))")
-        log("dataChannel.\(String(describing: publisherLossyDC?.label)) : \(String(describing: publisherLossyDC?.channelId))")
-
-        if !subscriberPrimary {
-            // lazy negotiation for protocol v3+
-            try await publisherShouldNegotiate()
-        }
-
-        self.subscriber = subscriber
-        self.publisher = publisher
     }
 }
 
@@ -340,138 +366,189 @@ extension Engine {
 
 // MARK: - Connection / Reconnection logic
 
+public enum StartReconnectReason {
+    case websocket
+    case transport
+    case networkSwitch
+    case debug
+}
+
 extension Engine {
     // full connect sequence, doesn't update connection state
     func fullConnectSequence(_ url: String, _ token: String) async throws {
         // This should never happen since Engine is owned by Room
-        let room = try await requireRoom()
+        let room = try requireRoom()
 
-        let jr = try await signalClient.connect(url,
-                                                token,
-                                                connectOptions: _state.connectOptions,
-                                                reconnectMode: _state.reconnectMode,
-                                                adaptiveStream: room._state.options.adaptiveStream)
+        let connectResponse = try await signalClient.connect(url,
+                                                             token,
+                                                             connectOptions: _state.connectOptions,
+                                                             reconnectMode: _state.isReconnectingWithMode,
+                                                             adaptiveStream: room._state.options.adaptiveStream)
         // Check cancellation after WebSocket connected
         try Task.checkCancellation()
 
         _state.mutate { $0.connectStopwatch.split(label: "signal") }
-        try await configureTransports(joinResponse: jr)
+        try await configureTransports(connectResponse: connectResponse)
         // Check cancellation after configuring transports
         try Task.checkCancellation()
 
-        try await signalClient.resumeResponseQueue()
-        try await primaryTransportConnectedCompleter.wait()
+        // Resume after configuring transports...
+        await signalClient.resumeQueues()
+
+        // Wait for transport...
+        try await _state.primaryTransportConnectedCompleter.wait()
+        try Task.checkCancellation()
+
         _state.mutate { $0.connectStopwatch.split(label: "engine") }
         log("\(_state.connectStopwatch)")
     }
 
-    func startReconnect() async throws {
+    func startReconnect(reason: StartReconnectReason, nextReconnectMode: ReconnectMode? = nil) async throws {
+        log("[Connect] Starting, reason: \(reason)")
+
         guard case .connected = _state.connectionState else {
-            log("[reconnect] must be called with connected state", .warning)
-            throw EngineError.state(message: "Must be called with connected state")
+            log("[Connect] Must be called with connected state", .error)
+            throw LiveKitError(.invalidState)
         }
 
         guard let url = _state.url, let token = _state.token else {
-            log("[reconnect] url or token is nil", .warning)
-            throw EngineError.state(message: "url or token is nil")
+            log("[Connect] Url or token is nil", .error)
+            throw LiveKitError(.invalidState)
         }
 
         guard subscriber != nil, publisher != nil else {
-            log("[reconnect] publisher or subscriber is nil", .warning)
-            throw EngineError.state(message: "Publisher or Subscriber is nil")
+            log("[Connect] Publisher or subscriber is nil", .error)
+            throw LiveKitError(.invalidState)
+        }
+
+        guard _state.isReconnectingWithMode == nil else {
+            log("[Connect] Reconnect already in progress...", .warning)
+            throw LiveKitError(.invalidState)
+        }
+
+        _state.mutate {
+            // Mark as Re-connecting internally
+            $0.isReconnectingWithMode = .quick
+            $0.nextReconnectMode = nextReconnectMode
         }
 
         // quick connect sequence, does not update connection state
-        func quickReconnectSequence() async throws {
-            log("[Reconnect] Starting .quick reconnect sequence...")
+        @Sendable func quickReconnectSequence() async throws {
+            log("[Connect] Starting .quick reconnect sequence...")
 
             // This should never happen since Engine is owned by Room
-            let room = try await requireRoom()
+            let room = try requireRoom()
 
-            try await signalClient.connect(url,
-                                           token,
-                                           connectOptions: _state.connectOptions,
-                                           reconnectMode: _state.reconnectMode,
-                                           adaptiveStream: room._state.options.adaptiveStream)
+            let connectResponse = try await signalClient.connect(url,
+                                                                 token,
+                                                                 connectOptions: _state.connectOptions,
+                                                                 reconnectMode: _state.isReconnectingWithMode,
+                                                                 adaptiveStream: room._state.options.adaptiveStream)
+            try Task.checkCancellation()
 
-            log("[Reconnect] waiting for socket to connect...")
+            // Update configuration
+            try await configureTransports(connectResponse: connectResponse)
+            try Task.checkCancellation()
+
+            // Resume after configuring transports...
+            await signalClient.resumeQueues()
+
+            log("[Connect] Waiting for subscriber to connect...")
             // Wait for primary transport to connect (if not already)
-            try await primaryTransportConnectedCompleter.wait()
+            try await _state.primaryTransportConnectedCompleter.wait()
+            log("[Connect] Subscriber.connectionState: \(String(describing: subscriber?.connectionState.description))")
+            try Task.checkCancellation()
 
             // send SyncState before offer
             try await sendSyncState()
 
-            subscriber?.isRestartingIce = true
+            await subscriber?.setIsRestartingIce()
 
-            // Only if published, continue...
-            guard let publisher, _state.hasPublished else { return }
-
-            log("[reconnect] waiting for publisher to connect...")
-
-            try await publisher.createAndSendOffer(iceRestart: true)
-            try await publisherTransportConnectedCompleter.wait()
-
-            log("[reconnect] Sending queued requests...")
-            // always check if there are queued requests
-            try await signalClient.sendQueuedRequests()
+            if let publisher, _state.hasPublished {
+                // Only if published, wait for publisher to connect...
+                log("[Connect] Waiting for publisher to connect...")
+                try await publisher.createAndSendOffer(iceRestart: true)
+                try await _state.publisherTransportConnectedCompleter.wait()
+            }
         }
 
         // "full" re-connection sequence
         // as a last resort, try to do a clean re-connection and re-publish existing tracks
-        func fullReconnectSequence() async throws {
-            log("[Reconnect] starting .full reconnect sequence...")
+        @Sendable func fullReconnectSequence() async throws {
+            log("[Connect] starting .full reconnect sequence...")
+
+            _state.mutate {
+                // Mark as Re-connecting
+                $0.connectionState = .reconnecting
+            }
+
             try await cleanUp(isFullReconnect: true)
 
             guard let url = _state.url,
                   let token = _state.token
             else {
-                throw EngineError.state(message: "url or token is nil")
+                log("[Connect] Url or token is nil")
+                throw LiveKitError(.invalidState)
             }
 
             try await fullConnectSequence(url, token)
         }
 
-        let retryingTask = Task.retrying(maxRetryCount: _state.connectOptions.reconnectAttempts,
-                                         retryDelay: _state.connectOptions.reconnectAttemptDelay)
-        { totalAttempts, currentAttempt in
-
-            // Not reconnecting state anymore
-            guard case .reconnecting = _state.connectionState else { return }
-
-            // Full reconnect failed, give up
-            guard _state.reconnectMode != .full else { return }
-
-            self.log("[Reconnect] retry in \(_state.connectOptions.reconnectAttemptDelay) seconds, \(currentAttempt)/\(totalAttempts) tries left...")
-
-            // Try full reconnect for the final attempt
-            if totalAttempts == currentAttempt, _state.nextPreferredReconnectMode == nil {
-                _state.mutate { $0.nextPreferredReconnectMode = .full }
-            }
-
-            let mode: ReconnectMode = self._state.mutate {
-                let mode: ReconnectMode = ($0.nextPreferredReconnectMode == .full || $0.reconnectMode == .full) ? .full : .quick
-                $0.connectionState = .reconnecting
-                $0.reconnectMode = mode
-                $0.nextPreferredReconnectMode = nil
-                return mode
-            }
-
-            if case .quick = mode {
-                try await quickReconnectSequence()
-            } else if case .full = mode {
-                try await fullReconnectSequence()
-            }
-        }
-
         do {
-            try await retryingTask.value
+            try await Task.retrying(totalAttempts: _state.connectOptions.reconnectAttempts,
+                                    retryDelay: _state.connectOptions.reconnectAttemptDelay)
+            { currentAttempt, totalAttempts in
+
+                // Not reconnecting state anymore
+                guard let currentMode = self._state.isReconnectingWithMode else {
+                    self.log("[Connect] Not in reconnect state anymore, exiting retry cycle.")
+                    return
+                }
+
+                // Full reconnect failed, give up
+                guard currentMode != .full else { return }
+
+                self.log("[Connect] Retry in \(self._state.connectOptions.reconnectAttemptDelay) seconds, \(currentAttempt)/\(totalAttempts) tries left.")
+
+                // Try full reconnect for the final attempt
+                if totalAttempts == currentAttempt, self._state.nextReconnectMode == nil {
+                    self._state.mutate { $0.nextReconnectMode = .full }
+                }
+
+                let mode: ReconnectMode = self._state.mutate {
+                    let mode: ReconnectMode = ($0.nextReconnectMode == .full || $0.isReconnectingWithMode == .full) ? .full : .quick
+                    $0.isReconnectingWithMode = mode
+                    $0.nextReconnectMode = nil
+                    return mode
+                }
+
+                do {
+                    if case .quick = mode {
+                        try await quickReconnectSequence()
+                    } else if case .full = mode {
+                        try await fullReconnectSequence()
+                    }
+                } catch {
+                    self.log("[Connect] Reconnect mode: \(mode) failed with error: \(error)", .error)
+                    // Re-throw
+                    throw error
+                }
+            }.value
+
             // Re-connect sequence successful
-            log("[reconnect] sequence completed")
-            _state.mutate { $0.connectionState = .connected }
+            log("[Connect] Sequence completed")
+            _state.mutate {
+                $0.connectionState = .connected
+                $0.isReconnectingWithMode = nil
+                $0.nextReconnectMode = nil
+            }
         } catch {
-            log("[Reconnect] Sequence failed with error: \(error)")
-            // Finally disconnect if all attempts fail
-            try await cleanUp(reason: .networkError(error))
+            log("[Connect] Sequence failed with error: \(error)")
+
+            if !Task.isCancelled {
+                // Finally disconnect if all attempts fail
+                try await cleanUp(withError: error)
+            }
         }
     }
 }
@@ -480,15 +557,12 @@ extension Engine {
 
 extension Engine {
     func sendSyncState() async throws {
-        let room = try await requireRoom()
-
-        guard let subscriber,
-              let previousAnswer = subscriber.localDescription
-        else {
-            // No-op
+        guard let room = _room, let subscriber else {
+            log("Subscriber is nil", .warning)
             return
         }
 
+        let previousAnswer = subscriber.localDescription
         let previousOffer = subscriber.remoteDescription
 
         // 1. autosubscribe on, so subscribed tracks = all tracks - unsub tracks,
@@ -498,51 +572,45 @@ extension Engine {
 
         let autoSubscribe = _state.connectOptions.autoSubscribe
         let trackSids = room._state.remoteParticipants.values.flatMap { participant in
-            participant._state.tracks.values
-                .filter { $0.subscribed != autoSubscribe }
+            participant._state.trackPublications.values
+                .filter { $0.isSubscribed != autoSubscribe }
                 .map(\.sid)
         }
 
         log("trackSids: \(trackSids)")
 
         let subscription = Livekit_UpdateSubscription.with {
-            $0.trackSids = trackSids
+            $0.trackSids = trackSids.map(\.stringValue)
             $0.participantTracks = []
             $0.subscribe = !autoSubscribe
         }
 
-        try await signalClient.sendSyncState(answer: previousAnswer.toPBType(),
+        try await signalClient.sendSyncState(answer: previousAnswer?.toPBType(),
                                              offer: previousOffer?.toPBType(),
-                                             subscription: subscription, publishTracks: room.localParticipant.publishedTracksInfo(),
-                                             dataChannels: publisherDC.infos())
+                                             subscription: subscription,
+                                             publishTracks: room.localParticipant.publishedTracksInfo(),
+                                             dataChannels: publisherDataChannel.infos())
     }
 }
 
 // MARK: - Private helpers
 
 extension Engine {
-    func requireRoom() async throws -> Room {
-        guard let room = _room else { throw EngineError.state(message: "Room is nil") }
+    func requireRoom() throws -> Room {
+        guard let room = _room else {
+            log("Room is nil", .error)
+            throw LiveKitError(.invalidState, message: "Room is nil")
+        }
+
         return room
     }
 
-    func requirePublisher() async throws -> Transport {
-        guard let publisher else { throw EngineError.state(message: "Publisher is nil") }
-        return publisher
-    }
-}
-
-// MARK: - ConnectivityListenerDelegate
-
-extension Engine: ConnectivityListenerDelegate {
-    func connectivityListener(_: ConnectivityListener, didSwitch path: NWPath) {
-        log("didSwitch path: \(path)")
-        Task {
-            // Network has been switched, e.g. wifi <-> cellular
-            if case .connected = _state.connectionState {
-                log("[Reconnect] Starting, reason: network path changed")
-                try await startReconnect()
-            }
+    func requirePublisher() throws -> Transport {
+        guard let publisher else {
+            log("Publisher is nil", .error)
+            throw LiveKitError(.invalidState, message: "Publisher is nil")
         }
+
+        return publisher
     }
 }
